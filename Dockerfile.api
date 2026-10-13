@@ -1,0 +1,53 @@
+FROM python:3.12.12-slim-trixie AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# requirements.txt copié AVANT le code : la couche pip reste en cache
+# tant que les dépendances ne changent pas.
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y pip
+
+
+FROM python:3.12.12-slim-trixie AS runtime
+
+LABEL org.opencontainers.image.title="system-metrics-api" \
+    org.opencontainers.image.description="API de réception des métriques" \
+    org.opencontainers.image.source="https://github.com/Mficius/system_metrics_agent"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip \
+    && groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
+
+WORKDIR /srv
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=root:root app/ ./app/
+
+# Le code appartient à root et l'application tourne en "app" :
+# un attaquant ne peut pas modifier le code depuis le conteneur.
+# UID numérique : vérifiable par Kubernetes (runAsNonRoot).
+USER 10001:10001
+
+EXPOSE 8000
+
+# Pas de curl dans l'image slim : on utilise Python, déjà présent.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+
+# Production : pas de --reload. Un seul worker car les métriques sont stockées
+# en mémoire (plusieurs workers = plusieurs listes indépendantes).
+CMD ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-server-header"]

@@ -1,0 +1,84 @@
+# SonarQube local (bonus) : docker compose -f docker-compose.sonar.yml up -d
+# Interface : http://localhost:9000  (premier login admin / admin, à changer)
+#
+# Option "tunnel" pour que GitHub Actions joigne ce SonarQube local :
+#   docker compose -f docker-compose.sonar.yml --profile tunnel up -d
+#   docker compose -f docker-compose.sonar.yml logs tunnel   -> URL https://xxx.trycloudflare.com
+#   puis mettre cette URL dans le secret GitHub SONAR_HOST_URL.
+
+name: sonarqube-local
+
+services:
+  sonarqube:
+    # Image d'outillage : épingler la version exacte affichée par
+    #   docker image inspect sonarqube:community --format '{{index .Config.Labels "org.opencontainers.image.version"}}'
+    image: sonarqube:community
+    depends_on:
+      sonar-db:
+        condition: service_healthy
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://sonar-db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD:-sonar}
+      # Poste de dev (Docker Desktop) : évite d'avoir à régler
+      # vm.max_map_count=524288 pour Elasticsearch. À ne pas faire en prod.
+      SONAR_SEARCH_JAVAADDITIONALOPTS: "-Dnode.store.allow_mmap=false"
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonar_data:/opt/sonarqube/data
+      - sonar_extensions:/opt/sonarqube/extensions
+      - sonar_logs:/opt/sonarqube/logs
+    healthcheck:
+      # bash /dev/tcp : aucune dépendance à curl/wget dans l'image
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /api/system/status HTTP/1.0\r\n\r\n' >&3 && grep -q '\"UP\"' <&3",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    networks:
+      - sonar
+
+  sonar-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD:-sonar}
+      POSTGRES_DB: sonar
+    volumes:
+      - sonar_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonar -d sonar"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - sonar
+
+  # Expose temporairement SonarQube sur Internet via un tunnel Cloudflare
+  # gratuit (sans compte) pour que les runners GitHub puissent l'atteindre.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate --url http://sonarqube:9000
+    depends_on:
+      sonarqube:
+        condition: service_healthy
+    networks:
+      - sonar
+
+volumes:
+  sonar_data:
+  sonar_extensions:
+  sonar_logs:
+  sonar_db:
+
+networks:
+  sonar:
+    name: sonar-net

@@ -1,1 +1,25 @@
+# Contexte de build minimal : seuls requirements.txt et app/ sont utiles.
+.git
+.github
+.gitignore
+.venv
+venv
 .env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache
+.coverage
+coverage.xml
+htmlcov
+.scannerwork
+tests/
+docs/
+*.md
+Dockerfile*
+docker-compose*.yml
+sonar-project.properties
+requirements-dev.txt
+pyproject.toml
+.flake8

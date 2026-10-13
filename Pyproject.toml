@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+exclude_also = ['if __name__ == "__main__":']
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]

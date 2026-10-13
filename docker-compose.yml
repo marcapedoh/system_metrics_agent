@@ -1,0 +1,67 @@
+# Lancement local complet : docker compose up --build
+# Prérequis : cp .env.example .env
+
+name: system-metrics
+
+# Durcissement commun aux deux services (ancre YAML réutilisée).
+x-hardening: &hardening
+  read_only: true                  # système de fichiers racine en lecture seule
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL                          # aucune capability Linux
+  security_opt:
+    - no-new-privileges:true       # pas d'élévation via setuid
+  restart: unless-stopped
+  env_file:
+    - .env
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  api:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: system-metrics-api:local
+    ports:
+      - "${API_PORT:-8000}:8000"
+    # Le HEALTHCHECK est défini dans Dockerfile.api ; Compose le réutilise.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    networks:
+      - metrics
+
+  agent:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: system-metrics-agent:local
+    hostname: agent-local
+    environment:
+      # Nom du service sur le réseau Docker, et non 127.0.0.1
+      # (127.0.0.1 désignerait le conteneur de l'agent lui-même).
+      # Cette valeur prime sur celle du fichier .env.
+      METRICS_ENDPOINT: http://api:8000/metrics
+    depends_on:
+      api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128M
+    networks:
+      - metrics
+
+networks:
+  metrics:
+    name: system-metrics-net
