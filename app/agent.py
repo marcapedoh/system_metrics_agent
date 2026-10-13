@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-import time
+import signal
+import threading
 
 from app.collector import MetricsCollectionError, collect_system_metrics
 from app.config import Settings
@@ -15,6 +16,15 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Événement d'arrêt : permet un arrêt propre sur SIGTERM (docker stop)
+# au lieu d'attendre le SIGKILL envoyé après 10 secondes.
+stop_event = threading.Event()
+
+
+def _request_stop(signum: int, _frame: object) -> None:
+    logger.info("Signal %s reçu, arrêt propre de l'agent.", signum)
+    stop_event.set()
 
 
 def run_once(settings: Settings) -> dict:
@@ -28,9 +38,11 @@ def run_once(settings: Settings) -> dict:
     )
 
 
-def run_forever() -> None:
-    """Lance l'agent en mode temps réel."""
+def run_forever(event: threading.Event = stop_event) -> None:
+    """Lance l'agent en mode temps réel jusqu'à réception d'un signal."""
     settings = Settings.from_env()
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
 
     logger.info(
         "Agent démarré. Endpoint=%s, intervalle=%ss",
@@ -38,7 +50,7 @@ def run_forever() -> None:
         settings.collection_interval,
     )
 
-    while True:
+    while not event.is_set():
         try:
             result = run_once(settings)
             logger.info(
@@ -51,11 +63,11 @@ def run_forever() -> None:
             ValueError,
         ) as exc:
             logger.error("Cycle échoué : %s", exc)
-        except KeyboardInterrupt:
-            logger.info("Arrêt demandé par l'utilisateur.")
-            break
 
-        time.sleep(settings.collection_interval)
+        # wait() est interrompu immédiatement quand l'événement est levé.
+        event.wait(settings.collection_interval)
+
+    logger.info("Agent arrêté.")
 
 
 if __name__ == "__main__":
