@@ -31,6 +31,7 @@ def test_latest_without_metrics_returns_404(client):
 
     assert response.status_code == 404
 
+
 # skfjvn
 def test_post_then_latest(client):
     created = client.post("/metrics", json=valid_payload())
