@@ -1,9 +1,18 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Image de l'API FastAPI — build multi-stage, utilisateur non-root.
+# Version Python épinglée (jamais "latest") : la même que la CI (3.12).
+# Tag écrit en clair dans chaque FROM (pas d'ARG) : hadolint peut le
+# vérifier (DL3006) et Dependabot peut le mettre à jour automatiquement.
+# ---------------------------------------------------------------------------
+
+# ---------- Étape 1 : builder (outils d'installation) ----------
 FROM python:3.12.12-slim-trixie AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-
+# Environnement virtuel isolé, copié tel quel dans l'image finale.
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -14,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && pip uninstall -y pip
 
-
+# ---------- Étape 2 : image finale (exécution seule) ----------
 FROM python:3.12.12-slim-trixie AS runtime
 
 LABEL org.opencontainers.image.title="system-metrics-api" \
@@ -25,7 +34,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
-
+# Correctifs de sécurité Debian publiés depuis la création de l'image de base,
+# puis suppression du pip système : aucun outil d'installation en production.
 RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/* \
