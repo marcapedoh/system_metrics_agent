@@ -1,7 +1,19 @@
+# Secrets et configuration locale
 .env
+
+# Python
 __pycache__/
-.pytest_cache/
-*.pyc
+*.py[cod]
 .venv/
 venv/
-.git/
+
+# Tests / qualité
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.scannerwork/
+
+# Rapports locaux
+trivy-*.json
+sbom*.json

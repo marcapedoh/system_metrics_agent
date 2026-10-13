@@ -63,3 +63,42 @@ def test_collect_system_metrics(
     assert metrics["memory"]["percent"] == 60.0
     assert metrics["system"]["load_1m"] == 0.1
     assert "timestamp" in metrics
+
+
+@patch("app.collector.platform.system", return_value="Windows")
+def test_get_load_average_windows_returns_none(_system):
+    assert get_load_average() == {
+        "load_1m": None,
+        "load_5m": None,
+        "load_15m": None,
+    }
+
+
+@patch("app.collector.subprocess.run")
+def test_get_load_average_macos_format(mock_run):
+    mock_run.return_value = Mock(stdout="10:00  up 2 days, load averages: 1.5 1.2 1.0")
+
+    assert get_load_average()["load_15m"] == 1.0
+
+
+@patch("app.collector.subprocess.run")
+def test_get_load_average_unparsable_output(mock_run):
+    mock_run.return_value = Mock(stdout="sortie inattendue")
+
+    with pytest.raises(MetricsCollectionError, match="analyser"):
+        get_load_average()
+
+
+@patch("app.collector.psutil.virtual_memory", side_effect=OSError("/proc absent"))
+def test_collect_system_metrics_wraps_unexpected_errors(_memory):
+    with pytest.raises(MetricsCollectionError, match="/proc absent"):
+        collect_system_metrics()
+
+
+@patch("app.collector.psutil.virtual_memory")
+@patch("app.collector.get_load_average")
+def test_collect_system_metrics_propagates_collection_error(mock_load, _memory):
+    mock_load.side_effect = MetricsCollectionError("uptime absent")
+
+    with pytest.raises(MetricsCollectionError, match="uptime absent"):
+        collect_system_metrics()

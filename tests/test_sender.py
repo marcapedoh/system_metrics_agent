@@ -45,3 +45,17 @@ def test_send_metrics_http_error(mock_post):
             "http://localhost:8000/metrics",
             {"agent": "test"},
         )
+
+
+@patch("app.sender.requests.post")
+def test_send_metrics_non_json_response(mock_post):
+    response = Mock()
+    response.status_code = 200
+    response.raise_for_status.return_value = None
+    response.json.side_effect = ValueError("pas du JSON")
+    response.text = "OK"
+    mock_post.return_value = response
+
+    result = send_metrics("http://localhost:8000/metrics", {"agent": "test"})
+
+    assert result["response"] == "OK"

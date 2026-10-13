@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1
+# ---------------------------------------------------------------------------
+# Image de l'agent de collecte — build multi-stage, utilisateur non-root.
+# ---------------------------------------------------------------------------
+
+# ---------- Étape 1 : builder ----------
+FROM python:3.12.12-slim-trixie AS builder
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /build
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y pip
+
+# ---------- Étape 2 : image finale ----------
+FROM python:3.12.12-slim-trixie AS runtime
+
+LABEL org.opencontainers.image.title="system-metrics-agent" \
+    org.opencontainers.image.description="Agent de collecte CPU / RAM / charge" \
+    org.opencontainers.image.source="https://github.com/Mficius/system_metrics_agent"
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# Le collecteur appelle la commande `uptime` via subprocess.
+# Elle n'existe pas dans l'image slim : elle est fournie par le paquet
+# Debian "procps" (vérifiable avec : dpkg -S "$(command -v uptime)").
+# --no-install-recommends évite d'installer des paquets superflus.
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && apt-get install -y --no-install-recommends procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall -y pip \
+    && groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
+
+WORKDIR /srv
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=root:root app/ ./app/
+
+# UID numérique : vérifiable par Kubernetes (runAsNonRoot).
+USER 10001:10001
+
+# L'agent intercepte SIGTERM (docker stop) pour s'arrêter proprement.
+# Configuration injectée à l'exécution : METRICS_ENDPOINT,
+# COLLECTION_INTERVAL, REQUEST_TIMEOUT (aucune valeur figée dans l'image).
+CMD ["python", "-m", "app.agent"]
