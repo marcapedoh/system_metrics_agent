@@ -1,0 +1,159 @@
+name: Release — Rollback / Delete
+
+# Bouton "Run workflow" dans l'onglet Actions (déclenchement manuel uniquement).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "rollback = repointer latest vers ce SHA ; delete = supprimer ce tag"
+        type: choice
+        options: [rollback, delete]
+        required: true
+      component:
+        description: "Image(s) concernée(s)"
+        type: choice
+        options: [both, api, agent]
+        default: both
+      tag:
+        description: "SHA du commit (tag de l'image), ex. 54de386539f4..."
+        type: string
+        required: true
+      confirm:
+        description: "Pour delete uniquement : retaper le SHA pour confirmer"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+# Jamais deux opérations de release en parallèle.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  NAMESPACE: ${{ vars.DOCKERHUB_USERNAME }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Garde-fou : seul le propriétaire du dépôt peut lancer ce workflow
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Contrôle d'accès et des paramètres
+    runs-on: ubuntu-latest
+    outputs:
+      components: ${{ steps.validate.outputs.components }}
+    steps:
+      - name: Propriétaire uniquement
+        if: github.actor != github.repository_owner || github.triggering_actor != github.repository_owner
+        run: |
+          echo "::error::Réservé à ${{ github.repository_owner }} (demandé par ${{ github.triggering_actor }})."
+          exit 1
+
+      - name: Valider les paramètres
+        id: validate
+        # Les entrées passent par des variables d'environnement, jamais
+        # interpolées directement dans le script (anti-injection de commandes).
+        env:
+          ACTION: ${{ inputs.action }}
+          COMPONENT: ${{ inputs.component }}
+          TAG: ${{ inputs.tag }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [ -z "${NAMESPACE}" ]; then
+            echo "::error::Variable de dépôt DOCKERHUB_USERNAME manquante."; exit 1
+          fi
+          if ! [[ "${TAG}" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "::error::Le tag doit être un SHA de commit (7 à 40 caractères hexadécimaux)."; exit 1
+          fi
+          if [ "${ACTION}" = "delete" ] && [ "${CONFIRM}" != "${TAG}" ]; then
+            echo "::error::Confirmation incorrecte : retapez exactement le SHA dans 'confirm'."; exit 1
+          fi
+          case "${COMPONENT}" in
+            both) echo 'components=["api","agent"]' >> "$GITHUB_OUTPUT" ;;
+            *)    echo "components=[\"${COMPONENT}\"]" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  # ---------------------------------------------------------------------------
+  # ROLLBACK : latest repointe vers une version précédente (rien n'est supprimé)
+  # ---------------------------------------------------------------------------
+  rollback:
+    name: Rollback ${{ matrix.component }} → ${{ inputs.tag }}
+    needs: guard
+    if: inputs.action == 'rollback'
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      matrix:
+        component: ${{ fromJSON(needs.guard.outputs.components) }}
+    env:
+      TAG: ${{ inputs.tag }}
+      IMAGE: ${{ vars.DOCKERHUB_USERNAME }}/system-metrics-${{ matrix.component }}
+    steps:
+      - name: Préparer Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Connexion à Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Vérifier que la version cible existe
+        run: |
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" > /dev/null \
+            || { echo "::error::${IMAGE}:${TAG} n'existe pas sur Docker Hub."; exit 1; }
+          echo "Avant : latest = $(docker buildx imagetools inspect "${IMAGE}:latest" --format '{{json .Manifest.Digest}}')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Repointer latest (sans pull ni rebuild)
+        run: |
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${TAG}"
+          echo "Après : ${IMAGE}:latest → ${TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # DELETE : suppression d'un tag (version compromise), cas exceptionnel
+  # ---------------------------------------------------------------------------
+  delete:
+    name: Delete ${{ matrix.component }}:${{ inputs.tag }}
+    needs: guard
+    if: inputs.action == 'delete'
+    runs-on: ubuntu-latest
+    # Environnement distinct : seul détenteur du token avec droit de suppression.
+    environment: dockerhub-admin
+    strategy:
+      matrix:
+        component: ${{ fromJSON(needs.guard.outputs.components) }}
+    env:
+      TAG: ${{ inputs.tag }}
+      REPO: system-metrics-${{ matrix.component }}
+    steps:
+      - name: Préparer Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Refuser de supprimer la version en production
+        run: |
+          image="${NAMESPACE}/${REPO}"
+          target=$(docker buildx imagetools inspect "${image}:${TAG}" --format '{{json .Manifest.Digest}}') \
+            || { echo "::error::${image}:${TAG} n'existe pas."; exit 1; }
+          current=$(docker buildx imagetools inspect "${image}:latest" --format '{{json .Manifest.Digest}}')
+          if [ "${target}" = "${current}" ]; then
+            echo "::error::${TAG} est la version servie par latest. Faites d'abord un rollback vers une autre version."
+            exit 1
+          fi
+
+      - name: Supprimer le tag via l'API Docker Hub
+        env:
+          DELETE_TOKEN: ${{ secrets.DOCKERHUB_DELETE_TOKEN }}
+        run: |
+          jwt=$(curl -fsS -X POST https://hub.docker.com/v2/users/login \
+                  -H "Content-Type: application/json" \
+                  -d "{\"username\": \"${NAMESPACE}\", \"password\": \"${DELETE_TOKEN}\"}" \
+                | python3 -c "import json, sys; print(json.load(sys.stdin)['token'])")
+          echo "::add-mask::${jwt}"
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                   -H "Authorization: Bearer ${jwt}" \
+                   "https://hub.docker.com/v2/repositories/${NAMESPACE}/${REPO}/tags/${TAG}/")
+          if [ "${code}" != "204" ]; then
+            echo "::error::Échec de la suppression (HTTP ${code})."; exit 1
+          fi
+          echo "Supprimé : ${NAMESPACE}/${REPO}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
