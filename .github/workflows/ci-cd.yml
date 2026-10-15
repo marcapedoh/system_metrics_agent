@@ -68,28 +68,52 @@ jobs:
             coverage.xml
             pytest-report.xml
 
+      # - name: Installer Java pour le scanner SonarQube
+      #   uses: actions/setup-java@v5
+      #   with:
+      #     distribution: temurin
+      #     java-version: "21"
+
+      # - name: Analyse SonarQube + Quality Gate
+      #   uses: SonarSource/sonarqube-scan-action@v5
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      #   with:
+      #     args: >
+      #       -Dsonar.scanner.skipJreProvisioning=true
+      # - name: Analyse SonarQube (+ attente de la Quality Gate)
+      #   uses: SonarSource/sonarqube-scan-action@v5
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      #   # sonar.qualitygate.wait=true (dans sonar-project.properties)
+      #   # fait échouer cette étape si la Quality Gate est rouge.
+
       - name: Installer Java pour le scanner SonarQube
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
+      - name: Cache du scanner SonarQube
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: sonar-${{ runner.os }}
+
       - name: Analyse SonarQube + Quality Gate
         uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        # sonar.qualitygate.wait=true (sonar-project.properties)
+        # fait échouer cette étape si la Quality Gate est rouge.
         with:
           args: >
             -Dsonar.scanner.skipJreProvisioning=true
-      - name: Analyse SonarQube (+ attente de la Quality Gate)
-        uses: SonarSource/sonarqube-scan-action@v5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        # sonar.qualitygate.wait=true (dans sonar-project.properties)
-        # fait échouer cette étape si la Quality Gate est rouge.
-
+            -Dsonar.scanner.javaExePath=${{ env.JAVA_HOME }}/bin/java
+            -Dsonar.scanner.socketTimeout=300
   # ---------------------------------------------------------------------------
   # Job 2 : build, scan Trivy, push Docker Hub — pour l'API et l'agent
   # ---------------------------------------------------------------------------
