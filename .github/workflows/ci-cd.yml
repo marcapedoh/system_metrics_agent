@@ -68,6 +68,20 @@ jobs:
             coverage.xml
             pytest-report.xml
 
+      - name: Installer Java pour le scanner SonarQube
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Analyse SonarQube + Quality Gate
+        uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.scanner.skipJreProvisioning=true
       - name: Analyse SonarQube (+ attente de la Quality Gate)
         uses: SonarSource/sonarqube-scan-action@v5
         env:
